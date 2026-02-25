@@ -51,10 +51,10 @@ int cfar_detector(double* signal, int length) {
         double noise_avg = noise_sum / (2 * CFAR_TRAIN); // 計算雜訊平均底噪
         double threshold = noise_avg * CFAR_OFFSET;      // 設定動態門檻
 
-        // 如果訊號強度 > 門檻，且該點是區域最大值(簡單防抖動)，則判定為目標
+        // 如果訊號強度 > 門檻，則判定為目標
         if (signal[i] > threshold && signal[i] > signal[i-1] && signal[i] > signal[i+1]) {
             detected_index = i;
-            break; // 簡化：假設一個視窗只抓一個最強目標
+            break; // 假設一個視窗只抓一個最強目標
         }
     }
     return detected_index;

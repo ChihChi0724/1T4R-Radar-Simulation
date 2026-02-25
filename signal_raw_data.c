@@ -29,13 +29,16 @@ void get_steering_vector(double complex *sv, double theta_deg) {
 }
 
 // PMCW Signal Model
-void SIMO_PMCW_RADAR_SIGNAL(double complex data[NUM_ANTENNAS][SIGNAL_LEN], int *target_dist, int *target_angle) {
+void SIMO_PMCW_RADAR_SIGNAL(double complex data[NUM_ANTENNAS][SIGNAL_LEN], int *haveTarget, int *target_dist, int *target_angle) {
+
+    *haveTarget = rand() % 2;
 
     static int angle_step = 5;
+    static int range_step = 2;
 
     // 1. 初始化雜訊
-    for (int ch=0; ch<NUM_ANTENNAS; ch++) {
-        for (int i=0; i<SIGNAL_LEN; i++) {
+    for (int ch = 0; ch < NUM_ANTENNAS; ch++) {
+        for (int i = 0; i < SIGNAL_LEN; i++) {
             // 產生複數高斯雜訊
             double real = ((double)rand()/RAND_MAX - 0.5) * 0.1;
             double imag = ((double)rand()/RAND_MAX - 0.5) * 0.1;
@@ -43,19 +46,23 @@ void SIMO_PMCW_RADAR_SIGNAL(double complex data[NUM_ANTENNAS][SIGNAL_LEN], int *
         }
     }
 
-     // 2. 加入目標訊號 (考慮距離延遲 + 角度相位差)
+     // 2. 加入目標訊號 (如果有目標)
+    if (*haveTarget) {
+        *target_dist += range_step;
+
         *target_angle += angle_step;
         if (*target_angle > 45 || *target_angle < -45) angle_step *= -1;
 
         double complex sv[NUM_ANTENNAS];
         get_steering_vector(sv, (double)*target_angle);
 
-        // 模擬訊號進入
         for (int k = 0; k < 13; k++) {
             if (*target_dist + k >= SIGNAL_LEN) break;
             for (int ch = 0; ch < NUM_ANTENNAS; ch++) {
-                // 訊號 = Barker Code * Steering Vector * 強度
+                // 訊號 = Barker Code * Steering Vector * 訊號強度
                 data[ch][*target_dist + k] += BARKER_REAL[k] * sv[ch] * 2.0;
             }
         }
+    }
+
 }

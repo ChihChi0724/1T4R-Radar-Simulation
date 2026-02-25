@@ -28,6 +28,7 @@ pthread_cond_t raw_empty = PTHREAD_COND_INITIALIZER;
 // Buffer 2: DOA Task Queue
 DoaTask task_queue[TASK_QUEUE_SIZE];
 int task_count = 0, task_in = 0, task_out = 0;
+int is_range_done = 0; // 用來通知 DOA 前面已經處理完畢了
 pthread_mutex_t task_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t task_has_data = PTHREAD_COND_INITIALIZER; // 不需要 full wait，滿了就丟棄任務即可
 
@@ -39,8 +40,9 @@ pthread_cond_t task_has_data = PTHREAD_COND_INITIALIZER; // 不需要 full wait�
 void* producer_1t4r(void* arg) {
     srand(time(NULL));
 
+    int haveTarget = 0;
     int target_dist = 30; // 初始距離
-    int target_angle = -45; // 初始角度 (掃描到 +45)
+    int target_angle = -45; // 初始角度 
 
     for (int f = 0; f < 20; f++) {
 
@@ -54,9 +56,13 @@ void* producer_1t4r(void* arg) {
         RadarFrame *frame = &raw_buffer[raw_in];
         frame->frame_id = f;
 
-        SIMO_PMCW_RADAR_SIGNAL(frame->data, &target_dist, &target_angle);
+        SIMO_PMCW_RADAR_SIGNAL(frame->data, &haveTarget, &target_dist, &target_angle);
 
-        printf("[RX] Frame %d: True Dist=%d, True Angle=%d deg\n", f, target_dist, target_angle);
+        if (haveTarget) {
+            printf("[RX] Frame %d: True Dist=%d, True Angle=%d deg\n", f, target_dist, target_angle);
+        } else {
+            printf("[RX] Frame %d: No Target", f);
+        }
 
         raw_in = (raw_in + 1) % RAW_BUFFER_SIZE;
         raw_count++;
@@ -67,35 +73,41 @@ void* producer_1t4r(void* arg) {
     return NULL;
 }
 
+// --- Consumer 1: Range Detection ---
 void* consumer_range(void* arg) {
     while (1) {
         pthread_mutex_lock(&raw_mutex);
         while (raw_count == 0) {
-            // 實際專案要處理 thread exit 條件，這裡省略
-             pthread_cond_wait(&raw_full, &raw_mutex);
+            pthread_cond_wait(&raw_full, &raw_mutex);
         }
 
-        double mf_output[SIGNAL_LEN]; // 用來存匹配濾波後的結果
-
         int idx = raw_out;
-        RadarFrame frame = raw_buffer[idx]; // 複製一份出來處理 (或用指標)
+        RadarFrame frame = raw_buffer[idx]; // 複製一份出來處理
         
         raw_out = (raw_out + 1) % RAW_BUFFER_SIZE;
         raw_count--;
         pthread_cond_signal(&raw_empty);
         pthread_mutex_unlock(&raw_mutex);
 
-        // --- Step 1: Range Processing (只用 Channel 0 做快速偵測) ---
-        // Matched Filter
-        matched_filter(frame.data[0], mf_output);
+        // --- Step 1: Range Processing ---
+        // Matched Filter (Non-coherent Integration)
+        double mf_output[SIGNAL_LEN];
+        double combined_power[SIGNAL_LEN] = {0};
 
-        int detected_idx = cfar_detector(mf_output, SIGNAL_LEN);
+        for (int ch = 0; ch < NUM_ANTENNAS; ch++) {
+            matched_filter(frame.data[ch], mf_output);
+            for (int k = 0; k < SIGNAL_LEN; k++) {
+                combined_power[k] += mf_output[k];
+            }
+        }
+
+        int detected_idx = cfar_detector(combined_power, SIGNAL_LEN);
 
         // 若判定為有目標
         if (detected_idx != -1) { 
             printf("  -> [Range DSP] Frame %d Det at %d. Send to DOA...\n", frame.frame_id, detected_idx);
             
-            // --- Step 2: 派發任務給 DOA Thread ---
+            // --- 派發任務給 DOA Thread ---
             pthread_mutex_lock(&task_mutex);
             if (task_count < TASK_QUEUE_SIZE) {
                 task_queue[task_in].frame_id = frame.frame_id;
@@ -115,17 +127,29 @@ void* consumer_range(void* arg) {
              printf("  -> [Range DSP] Frame %d No Target.\n", frame.frame_id);
         }
         
-        if (frame.frame_id >= 19) break; // 模擬結束條件
+        if (frame.frame_id >= 19) {
+            pthread_mutex_lock(&task_mutex);
+            is_range_done = 1; // 宣告 Range DSP 已經不再送資料了
+            pthread_cond_signal(&task_has_data); 
+            pthread_mutex_unlock(&task_mutex);
+            break; 
+        }
     }
     return NULL;
 }
 
-// --- Consumer 2: DOA Estimation (精密運算) ---
+// --- Consumer 2: DOA Estimation ---
 void* consumer_doa(void* arg) {
     while (1) {
         pthread_mutex_lock(&task_mutex);
-        while (task_count == 0) {
+        
+        while (task_count == 0 && is_range_done == 0) {
              pthread_cond_wait(&task_has_data, &task_mutex);
+        }
+
+        if (task_count == 0 && is_range_done == 1) {
+            pthread_mutex_unlock(&task_mutex);
+            break; 
         }
 
         DoaTask task = task_queue[task_out];
@@ -133,9 +157,7 @@ void* consumer_doa(void* arg) {
         task_count--;
         pthread_mutex_unlock(&task_mutex);
 
-        // --- Step 3: CAPON Processing ---
-
-        // 2. 角度掃描 (Scan)
+        // --- CAPON Processing ---
         int estimated_angle = 0;
         capon(task.snapshot, &estimated_angle);
 
@@ -145,7 +167,6 @@ void* consumer_doa(void* arg) {
         printf("    => [DOA DSP] Frame %d Result: Dist=%d, Angle=%d deg\n", 
                task.frame_id, task.range_bin_idx, estimated_angle);
 
-        if (task.frame_id >= 19) break;
     }
     return NULL;
 }

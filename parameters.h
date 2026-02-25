@@ -27,7 +27,7 @@ typedef struct {
     int frame_id;
 } RadarFrame;
 
-// 2. Detection Task (Consumer 1 傳給 Consumer 2 的工單)
+// 2. Detection Task (Range Consumer send to DSP Consumer)
 typedef struct {
     int frame_id;
     int range_bin_idx;
@@ -36,7 +36,7 @@ typedef struct {
 
 // signal_model
 void get_steering_vector(double complex *sv, double theta_deg);
-void SIMO_PMCW_RADAR_SIGNAL(double complex data[NUM_ANTENNAS][SIGNAL_LEN], int *target_dist, int *target_angle);
+void SIMO_PMCW_RADAR_SIGNAL(double complex data[NUM_ANTENNAS][SIGNAL_LEN], int *haveTarget, int *target_dist, int *target_angle);
 
 // DSP function
 void matched_filter(double complex* input, double* output);
